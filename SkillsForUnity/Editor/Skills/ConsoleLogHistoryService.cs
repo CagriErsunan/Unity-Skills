@@ -18,8 +18,11 @@ namespace UnitySkills
     [InitializeOnLoad]
     internal static class ConsoleLogHistoryService
     {
-        internal const int MaxEntries = 50000;
+        internal const int MaxEntries = 10000;
         internal const long MaxBytes = 64L * 1024L * 1024L;
+        // Rewriting the whole JSONL on every eviction stalls the main thread once the history is full;
+        // stale head lines are harmless because a reload trims to the newest MaxEntries.
+        private const int CompactEveryEvictions = 2000;
         internal const int DefaultReadLimit = 100;
         internal const int MaxReadLimit = 1000;
 
@@ -46,6 +49,7 @@ namespace UnitySkills
         private static bool _capturing;
         private static bool _dirty;
         private static bool _needsCompact;
+        private static int _evictionsSinceCompact;
         private static bool _persistenceFailed;
         private static long _nextFlushUtcTicks;
 
@@ -393,20 +397,21 @@ namespace UnitySkills
             record.ApproximateBytes = ApproximateBytes(record);
             Records.Add(record);
             _bytes += record.ApproximateBytes;
-            bool evicted = false;
+            int evicted = 0;
             while (Records.Count > MaxEntries || _bytes > MaxBytes)
             {
                 var removed = Records[0];
                 Records.RemoveAt(0);
                 _bytes -= removed.ApproximateBytes;
                 _dropped++;
-                evicted = true;
+                evicted++;
             }
             if (persistAppend)
             {
                 _dirty = true;
                 PendingPersistence.Add(record);
-                _needsCompact |= evicted;
+                _evictionsSinceCompact += evicted;
+                _needsCompact |= _evictionsSinceCompact >= CompactEveryEvictions;
             }
         }
 
@@ -475,6 +480,7 @@ namespace UnitySkills
                     if (_needsCompact)
                     {
                         RewritePersistenceLocked();
+                        _evictionsSinceCompact = 0;
                     }
                     else
                     {
@@ -630,7 +636,7 @@ namespace UnitySkills
                 _logPath = path ?? _logPath;
                 _statePath = string.IsNullOrEmpty(_logPath) ? null : _logPath + ".state";
                 Records.Clear(); NativeKeys.Clear(); PendingPersistence.Clear(); _seq = 0; _bytes = 0; _dropped = 0; _corruptRows = 0; _generation = 0; _captureStartSeq = 0; _capturing = false;
-                _dirty = false; _needsCompact = false;
+                _dirty = false; _needsCompact = false; _evictionsSinceCompact = 0;
                 if (!string.IsNullOrEmpty(_logPath) && File.Exists(_logPath)) File.Delete(_logPath);
                 if (!string.IsNullOrEmpty(_statePath) && File.Exists(_statePath)) File.Delete(_statePath);
             }
@@ -710,7 +716,7 @@ namespace UnitySkills
             FlushNow();
             lock (SyncRoot)
             {
-                Records.Clear(); NativeKeys.Clear(); PendingPersistence.Clear(); _seq = 0; _bytes = 0; _dropped = 0; _corruptRows = 0; _generation = 0; _dirty = false; _needsCompact = false; _persistenceFailed = false;
+                Records.Clear(); NativeKeys.Clear(); PendingPersistence.Clear(); _seq = 0; _bytes = 0; _dropped = 0; _corruptRows = 0; _generation = 0; _dirty = false; _needsCompact = false; _evictionsSinceCompact = 0; _persistenceFailed = false;
                 LoadPersistedHistory();
             }
         }

@@ -11,11 +11,13 @@ namespace UnitySkills.Tests.Core
     public class ConsoleLogHistoryServiceTests
     {
         private IDisposable _scope;
+        private string _path;
 
         [SetUp]
         public void SetUp()
         {
-            _scope = ConsoleLogHistoryService.BeginTestScope(Path.Combine(Path.GetTempPath(), "UnitySkillsConsoleLogs_" + Guid.NewGuid().ToString("N") + ".jsonl"));
+            _path = Path.Combine(Path.GetTempPath(), "UnitySkillsConsoleLogs_" + Guid.NewGuid().ToString("N") + ".jsonl");
+            _scope = ConsoleLogHistoryService.BeginTestScope(_path);
         }
 
         [TearDown]
@@ -170,6 +172,19 @@ namespace UnitySkills.Tests.Core
             Assert.IsFalse(complete);
             Assert.IsFalse(window.complete);
             Assert.AreEqual(2L, window.logs[0].seq);
+        }
+
+        [Test]
+        public void Overflow_AppendsInsteadOfRewritingEveryFlush()
+        {
+            for (int i = 0; i < ConsoleLogHistoryService.MaxEntries; i++)
+                ConsoleLogHistoryService.RecordForTests("fill-" + i);
+            ConsoleLogHistoryService.FlushForTests();
+
+            ConsoleLogHistoryService.RecordForTests("overflow");
+            ConsoleLogHistoryService.FlushForTests();
+
+            Assert.AreEqual(ConsoleLogHistoryService.MaxEntries + 1, File.ReadAllLines(_path).Length);
         }
     }
 }
